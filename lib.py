@@ -1,6 +1,7 @@
 import boto3
 import datetime
 import yaml
+import re
 
 def load_config():
     return yaml.load(open("config.yaml", "r", encoding="utf-8"), Loader=yaml.SafeLoader)
@@ -52,6 +53,24 @@ def exec_athena_query(query):
             }
         }
     )
+
+# 指定されたパスにアクセスできて、オブジェクトが1個以上存在するならTrue
+def get_some_objects_from_s3(s3path):
+    match = re.search(r"s3://(?P<bucket>[^/]+)(?P<prefix>/?.*)", s3path)
+    if match == None:
+        raise Exception(f"malformed s3 path: {s3path}")
+    
+    bucket_name = match.group("bucket")
+    prefix = match.group("prefix")
+    if prefix == "/":
+        prefix = ""
+
+    try:
+        client = boto3.client('s3')
+        objects = client.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix)
+        return objects["KeyCount"] != 0
+    except:
+        return False
 
 # 使い方を出力
 def print_usage():
