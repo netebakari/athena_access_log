@@ -1,2 +1,3 @@
 resultS3location: s3://YOUR_ATHENA_RESULT_BUCKET_NAME/path/to/somewhere/
 schema: YOUR_ATHENA_SCHEMA_NAME
+region: ap-northeast-1
