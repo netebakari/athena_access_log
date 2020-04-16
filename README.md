@@ -1,1 +1,1 @@
-# athena_alb_access_log
+ALB / Classic ELBのログをAthenaで集計するテーブルを作るやつ
