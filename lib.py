@@ -2,6 +2,7 @@ import boto3
 import datetime
 import yaml
 import re
+import time
 
 def parse_lb_names(raw_lb_name):
     s = raw_lb_name.split("=", 1)
@@ -59,9 +60,11 @@ def get_loadbalancer(name):
 
     raise Exception(f"{name} not found or access log not enabled")
 
-# Athenaでクエリを実行する。スキーマ名、結果の転送先は config.yaml で指定する
-def exec_athena_query(query):
-    config = load_config()
+# Athenaでクエリを実行する
+def exec_athena_query(config, query):
+    if config["dry_run_mode"]:
+        return
+    
     timestamp = datetime.datetime.now().isoformat()
 
     client = boto3.client('athena')
@@ -69,10 +72,10 @@ def exec_athena_query(query):
         QueryString=query,
         ClientRequestToken=f"query_{timestamp}",
         QueryExecutionContext={
-            'Database': config.schema
+            'Database': config["database"]
         },
         ResultConfiguration={
-            'OutputLocation': config.resultS3location,
+            'OutputLocation': config["result_s3_location"],
             'EncryptionConfiguration': {
                 'EncryptionOption': 'SSE_S3'
             }
@@ -111,14 +114,8 @@ def get_table_creation_ddl(type, tablename, s3_path):
     file = open(f"{filename}.txt")
     content = file.read()
     file.close()
-    account_no = get_account_no()
-    region = load_config()["region"]
 
     content = content.replace("$TABLENAME", tablename)
-    if prefix == "":
-        prefix = "/"
-    if prefix[0] != "/":
-        prefix = "/" + prefix
     content = content.replace("$S3PATH", s3_path)
     return content
 
@@ -131,46 +128,50 @@ def get_transformed_view_ddl(tablename):
     return content
 
 # パーティショニングを設定するDDLを取得する
-def get_partitioning_ddl(table_name, lb_name, s3_path, year, day_count):
-    date = datetime.date(year, 1, 1) + datetime.timedelta(days=day_count)
-    return f"ALTER TABLE `{table_name}` ADD PARTITION (albname='{lb_name}', year={year}, month={date.month}, day={date.day}) location '{s3_path}/{date.strftime('%m')}/{date.strftime('%d')}'"
+def get_partitioning_ddl(table_name, lb_name, s3_path, date):
+    return f"ALTER TABLE `{table_name}` ADD PARTITION (lbname='{lb_name}', year={date.year}, month={date.month}, day={date.day}) location '{s3_path}/{date.strftime('%m')}/{date.strftime('%d')}/'"
 
 
-# 処理の本体。1個のALB/Classic ELBに対してテーブル作成、ビュー作成(ELBの場合)、パーティショニング設定を行う
-def process(lb_name, short_name, year, dry_run_mode):
+# 処理の本体。1個のALB/Classic ELBに対してテーブル作成、ビュー作成(ELBの場合)、パーティショニング設定を行う。
+# 処理が終わったら作成したテーブル名またはビュー名を返す
+def process(lb_name, short_name, year, config):
     # ALBかclassic ELBかをチェック（見つからなければ例外で終わり）
     loadbalancer = get_loadbalancer(lb_name)
     table_name = f"{short_name}_accesslogs_{year}".replace("-", "_")
 
     # S3のパスを決める
     prefix = f"/{loadbalancer['prefix']}/".replace("//", "/")
-    s3_path = f"s3://{loadbalancer['bucket']}{prefix}AWSLogs/{account_no}/elasticloadbalancing/{region}/{year}"
+    s3_path = f"s3://{loadbalancer['bucket']}{prefix}AWSLogs/{config['account_no']}/elasticloadbalancing/{config['region']}/{year}"
 
     # テーブル作る
-    query = get_table_creation_ddl(loadbalancer["type"], s3_path)
+    query = get_table_creation_ddl(loadbalancer["type"], table_name, s3_path)
     print(query)
     print("-- -----------")
-    if not dry_run_mode:
-        exec_athena_query(query)
-        print(f"table {table_name} created")
+    exec_athena_query(config, query)
+    print(f"table {table_name} created")
 
     # Classic ELBのときはビューも作る
     if loadbalancer["type"] == "ELB":
         query = get_transformed_view_ddl(table_name)
         print(query)
         print("-- ------------------")
-        if not dry_run_mode:
-            exec_athena_query(query)
-            print(f"view {table_name}_t created")
+        exec_athena_query(config, query)
+        print(f"view {table_name}_t created")
 
     # パーティショニング実行
     for i in range(365):
-        query = get_partitioning_ddl(table_name, short_name, s3_path, year, i)
+        date = datetime.date(year, 1, 1) + datetime.timedelta(days=i)
+        query = get_partitioning_ddl(table_name, short_name, s3_path, date)
         print(query)
-        if not dry_run_mode:
-            exec_athena_query(query)
+        exec_athena_query(config, query)
+        if not config["dry_run_mode"]:
             time.sleep(1)
 
         # 年末に来たらおしまい
         if date.month == 12 and date.day == 31:
             break
+    
+    if loadbalancer["type"] == "ELB":
+        return f"{table_name}_t"
+    else:
+        return table_name
