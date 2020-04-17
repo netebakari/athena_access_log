@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW `$TABLENAME_t` AS 
+CREATE OR REPLACE VIEW $TABLENAME_t AS 
 SELECT
     '-' "type",
     "timestamp" "time",
@@ -34,4 +34,4 @@ SELECT
     "year",
     "month",
     "day"
-FROM `$TABLENAME`;
+FROM $TABLENAME

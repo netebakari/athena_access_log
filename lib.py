@@ -148,7 +148,6 @@ def process(lb_name, short_name, year, config):
     print(query)
     print("-- -----------")
     exec_athena_query(config, query)
-    print(f"table {table_name} created")
 
     # Classic ELBのときはビューも作る
     if loadbalancer["type"] == "ELB":
@@ -156,7 +155,6 @@ def process(lb_name, short_name, year, config):
         print(query)
         print("-- ------------------")
         exec_athena_query(config, query)
-        print(f"view {table_name}_t created")
 
     # パーティショニング実行
     for i in range(365):
