@@ -1,9 +1,9 @@
 ALB / Classic ELBのログをAthenaで集計するテーブルを作るスクリプト
 
 # 使い方
-## テーブル作成＆パーティショニング設定
+## ALB/ELBのテーブル作成＆パーティショニング設定
 ```
-python3 table.py \
+python3 alb.py \
   --albnames \
     <ALBの名前1>=<ALBの略称1> \
     <ALBの名前2=ALBの略称2> \
@@ -32,7 +32,7 @@ python3 table.py \
 
 ## 例
 ```
-python3 table.py \
+python3 alb.py \
   --albnames \
      my-hogehoge-product-alb=hoge \
      my-fugafuga-alb \
