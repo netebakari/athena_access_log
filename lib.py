@@ -3,8 +3,19 @@ import datetime
 import yaml
 import re
 
-def load_config():
-    return yaml.load(open("config.yaml", "r", encoding="utf-8"), Loader=yaml.SafeLoader)
+def parse_lb_names(raw_lb_name):
+    s = raw_lb_name.split("=", 1)
+    if len(s) == 1:
+        result = {"lbname": raw_lb_name, "short_name": raw_lb_name}
+    else:
+        result = {"lbname": s[0], "short_name": s[1]}
+    
+    match = re.search(r"^[a-zA-Z-_]+$", result["short_name"])
+    if match == None:
+        raise Exception(f"short name '{result['short_name']}' malformed")
+    
+    return result
+
     
 # 指定した名前のALBが存在し、ログの保存が有効になっていたらS3の情報を返す。それ以外の場合はNoneを返す
 def get_alb(name):
@@ -95,7 +106,7 @@ def get_account_no():
 
 
 # テーブル作成DDLを取得する
-def get_table_creation_ddl(type, tablename, bucket, prefix):
+def get_table_creation_ddl(type, tablename, s3_path):
     filename = "ddl_alb" if type == "ALB" else "ddl_elb"
     file = open(f"{filename}.txt")
     content = file.read()
@@ -108,7 +119,7 @@ def get_table_creation_ddl(type, tablename, bucket, prefix):
         prefix = "/"
     if prefix[0] != "/":
         prefix = "/" + prefix
-    content = content.replace("$S3PATH", f"s3://{bucket}{prefix}/AWSLogs/{account_no}/elasticloadbalancing/{region}")
+    content = content.replace("$S3PATH", s3_path)
     return content
 
 # Classic ELBのテーブルからビューを作るDDLを取得する
@@ -119,22 +130,47 @@ def get_transformed_view_ddl(tablename):
     content = content.replace("$TABLENAME", tablename)
     return content
 
-# 使い方を出力
-def print_usage():
-    this_year = timestamp = datetime.datetime.now().year
+# パーティショニングを設定するDDLを取得する
+def get_partitioning_ddl(table_name, lb_name, s3_path, year, day_count):
+    date = datetime.date(year, 1, 1) + datetime.timedelta(days=day_count)
+    return f"ALTER TABLE `{table_name}` ADD PARTITION (albname='{lb_name}', year={year}, month={date.month}, day={date.day}) location '{s3_path}/{date.strftime('%m')}/{date.strftime('%d')}'"
 
-    print(f"[USAGE]")
-    print(f"table.py <lb-name> [year(={this_year})] [dryRunMode]")
-    print(f"")
-    print(f"[example 1]")
-    print(f"table.py myAlb")
-    print(f"  - create athena table for this year({this_year})")
-    print(f"")
-    print(f"[example 2]")
-    print(f"table.py myAlb 2019")
-    print(f"  - create athena table for year=2019")
-    print(f"")
-    print(f"[example 2]")
-    print(f"table.py myAlb 2020 1")
-    print(f"  - dry-run mode (just print DDL)")
-    print(f"")
+
+# 処理の本体。1個のALB/Classic ELBに対してテーブル作成、ビュー作成(ELBの場合)、パーティショニング設定を行う
+def process(lb_name, short_name, year, dry_run_mode):
+    # ALBかclassic ELBかをチェック（見つからなければ例外で終わり）
+    loadbalancer = get_loadbalancer(lb_name)
+    table_name = f"{short_name}_accesslogs_{year}".replace("-", "_")
+
+    # S3のパスを決める
+    prefix = f"/{loadbalancer['prefix']}/".replace("//", "/")
+    s3_path = f"s3://{loadbalancer['bucket']}{prefix}AWSLogs/{account_no}/elasticloadbalancing/{region}/{year}"
+
+    # テーブル作る
+    query = get_table_creation_ddl(loadbalancer["type"], s3_path)
+    print(query)
+    print("-- -----------")
+    if not dry_run_mode:
+        exec_athena_query(query)
+        print(f"table {table_name} created")
+
+    # Classic ELBのときはビューも作る
+    if loadbalancer["type"] == "ELB":
+        query = get_transformed_view_ddl(table_name)
+        print(query)
+        print("-- ------------------")
+        if not dry_run_mode:
+            exec_athena_query(query)
+            print(f"view {table_name}_t created")
+
+    # パーティショニング実行
+    for i in range(365):
+        query = get_partitioning_ddl(table_name, short_name, s3_path, year, i)
+        print(query)
+        if not dry_run_mode:
+            exec_athena_query(query)
+            time.sleep(1)
+
+        # 年末に来たらおしまい
+        if date.month == 12 and date.day == 31:
+            break
